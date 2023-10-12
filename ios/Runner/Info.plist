@@ -60,6 +60,13 @@
 	</array>
 	<!-- FlLocation plugin -->
 
+	<!-- flutter_background_service -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>dev.flutter.background.refresh</string>
+	</array>
+	<!-- flutter_background_service -->
+
 	<!-- Geofencing plugin -->
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>

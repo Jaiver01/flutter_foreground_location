@@ -54,9 +54,9 @@
             android:value="2" />
 
         <!-- flutter_foreground_task plugin -->
-        <service 
+        <!-- <service 
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
-            android:stopWithTask="false" />
+            android:stopWithTask="false" /> -->
         <!-- flutter_foreground_task plugin -->
     </application>
 </manifest>

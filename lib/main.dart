@@ -1,253 +1,299 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:isolate';
+import 'dart:ui';
 
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:fl_location/fl_location.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_background_service_android/flutter_background_service_android.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() => runApp(const MyApp());
-
-@pragma('vm:entry-point')
-void startCallback() {
-  // The setTaskHandler function must be called to handle the task in the background.
-  FlutterForegroundTask.setTaskHandler(FirstTaskHandler());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeService();
+  runApp(const MyApp());
 }
 
-class FirstTaskHandler extends TaskHandler {
-  StreamSubscription<Location>? _streamSubscription;
+Future<void> initializeService() async {
+  final service = FlutterBackgroundService();
 
-  @override
-  void onStart(DateTime timestamp, SendPort? sendPort) async {
-    _streamSubscription =
-        FlLocation.getLocationStream().listen((location) async {
-      FlutterForegroundTask.updateService(
-        notificationTitle: 'My Location',
-        notificationText: '${location.latitude}, ${location.longitude}',
-      );
+  /// OPTIONAL, using custom notification channel id
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'my_foreground', // id
+    'MY FOREGROUND SERVICE', // title
+    description:
+        'This channel is used for important notifications.', // description
+    importance: Importance.low, // importance must be at low or higher level
+  );
 
-      await _writeData('-> ${location.toString()} <-\n');
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
 
-      // Send data to the main isolate.
-      sendPort?.send(location.toString());
+  if (Platform.isIOS || Platform.isAndroid) {
+    await flutterLocalNotificationsPlugin.initialize(
+      const InitializationSettings(
+        iOS: DarwinInitializationSettings(),
+        android: AndroidInitializationSettings('ic_bg_service_small'),
+      ),
+    );
+  }
+
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      // this will be executed when app is in foreground or background in separated isolate
+      onStart: onStart,
+
+      // auto start service
+      autoStart: true,
+      isForegroundMode: true,
+
+      notificationChannelId: 'my_foreground',
+      initialNotificationTitle: 'AWESOME SERVICE',
+      initialNotificationContent: 'Initializing',
+      foregroundServiceNotificationId: 888,
+    ),
+    iosConfiguration: IosConfiguration(
+      // auto start service
+      autoStart: true,
+
+      // this will be executed when app is in foreground in separated isolate
+      onForeground: onStart,
+
+      // you have to enable background fetch capability on xcode project
+      onBackground: onIosBackground,
+    ),
+  );
+
+  service.startService();
+}
+
+// to ensure this is executed
+// run app from xcode, then from xcode menu, select Simulate Background Fetch
+
+@pragma('vm:entry-point')
+Future<bool> onIosBackground(ServiceInstance service) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  DartPluginRegistrant.ensureInitialized();
+
+  SharedPreferences preferences = await SharedPreferences.getInstance();
+  await preferences.reload();
+  final log = preferences.getStringList('log') ?? <String>[];
+  log.add(DateTime.now().toIso8601String());
+  await preferences.setStringList('log', log);
+
+  return true;
+}
+
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  // Only available for flutter 3.0.0 and later
+  DartPluginRegistrant.ensureInitialized();
+
+  // For flutter prior to version 3.0.0
+  // We have to register the plugin manually
+
+  SharedPreferences preferences = await SharedPreferences.getInstance();
+  await preferences.setString("hello", "world");
+
+  /// OPTIONAL when use custom notification
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+
+  if (service is AndroidServiceInstance) {
+    service.on('setAsForeground').listen((event) {
+      service.setAsForegroundService();
+    });
+
+    service.on('setAsBackground').listen((event) {
+      service.setAsBackgroundService();
     });
   }
 
-  @override
-  void onRepeatEvent(DateTime timestamp, SendPort? sendPort) async {}
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
 
-  @override
-  void onDestroy(DateTime timestamp, SendPort? sendPort) async {
-    await _streamSubscription?.cancel();
-  }
+  // bring to foreground
+  Timer.periodic(const Duration(seconds: 5), (timer) async {
+    if (service is AndroidServiceInstance) {
+      if (await service.isForegroundService()) {
+        /// OPTIONAL for use custom notification
+        /// the notification id must be equals with AndroidConfiguration when you call configure() method.
+        flutterLocalNotificationsPlugin.show(
+          888,
+          'COOL SERVICE',
+          'Awesome ${DateTime.now()}',
+          const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'my_foreground',
+              'MY FOREGROUND SERVICE',
+              icon: 'ic_bg_service_small',
+              ongoing: true,
+            ),
+          ),
+        );
+
+        // if you don't using custom notification, uncomment this
+        service.setForegroundNotificationInfo(
+          title: "My App Service",
+          content: "Updated at: ${DateTime.now()}",
+        );
+      }
+    }
+
+    /// you can see this log in logcat
+    print('FLUTTER BACKGROUND SERVICE: ${DateTime.now()}');
+
+    // test using external plugin
+    final deviceInfo = DeviceInfoPlugin();
+    String? device;
+    if (Platform.isAndroid) {
+      final androidInfo = await deviceInfo.androidInfo;
+      device = androidInfo.model;
+    }
+
+    if (Platform.isIOS) {
+      final iosInfo = await deviceInfo.iosInfo;
+      device = iosInfo.model;
+    }
+
+    service.invoke(
+      'update',
+      {
+        "current_date": DateTime.now().toIso8601String(),
+        "device": device,
+      },
+    );
+  });
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  const MyApp({Key? key}) : super(key: key);
 
   @override
   State<MyApp> createState() => _MyAppState();
 }
 
 class _MyAppState extends State<MyApp> {
-  String data = '';
+  String text = "Stop Service";
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        appBar: AppBar(
+          title: const Text('Service App'),
+        ),
+        body: Column(
+          children: [
+            StreamBuilder<Map<String, dynamic>?>(
+              stream: FlutterBackgroundService().on('update'),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const Center(
+                    child: CircularProgressIndicator(),
+                  );
+                }
 
-  Future<void> _requestPermissionForAndroid() async {
-    if (!Platform.isAndroid) {
-      return;
-    }
+                final data = snapshot.data!;
+                String? device = data["device"];
+                DateTime? date = DateTime.tryParse(data["current_date"]);
+                return Column(
+                  children: [
+                    Text(device ?? 'Unknown'),
+                    Text(date.toString()),
+                  ],
+                );
+              },
+            ),
+            ElevatedButton(
+              child: const Text("Foreground Mode"),
+              onPressed: () {
+                FlutterBackgroundService().invoke("setAsForeground");
+              },
+            ),
+            ElevatedButton(
+              child: const Text("Background Mode"),
+              onPressed: () {
+                FlutterBackgroundService().invoke("setAsBackground");
+              },
+            ),
+            ElevatedButton(
+              child: Text(text),
+              onPressed: () async {
+                final service = FlutterBackgroundService();
+                var isRunning = await service.isRunning();
+                if (isRunning) {
+                  service.invoke("stopService");
+                } else {
+                  service.startService();
+                }
 
-    // "android.permission.SYSTEM_ALERT_WINDOW" permission must be granted for
-    // onNotificationPressed function to be called.
-    //
-    // When the notification is pressed while permission is denied,
-    // the onNotificationPressed function is not called and the app opens.
-    //
-    // If you do not use the onNotificationPressed or launchApp function,
-    // you do not need to write this code.
-    if (!await FlutterForegroundTask.canDrawOverlays) {
-      // This function requires `android.permission.SYSTEM_ALERT_WINDOW` permission.
-      await FlutterForegroundTask.openSystemAlertWindowSettings();
-    }
-
-    // Android 12 or higher, there are restrictions on starting a foreground service.
-    //
-    // To restart the service on device reboot or unexpected problem, you need to allow below permission.
-    if (!await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
-      // This function requires `android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission.
-      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
-    }
-
-    // Android 13 and higher, you need to allow notification permission to expose foreground service notification.
-    final NotificationPermission notificationPermissionStatus =
-        await FlutterForegroundTask.checkNotificationPermission();
-    if (notificationPermissionStatus != NotificationPermission.granted) {
-      await FlutterForegroundTask.requestNotificationPermission();
-    }
+                if (!isRunning) {
+                  text = 'Stop Service';
+                } else {
+                  text = 'Start Service';
+                }
+                setState(() {});
+              },
+            ),
+            const Expanded(
+              child: LogView(),
+            ),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: () {},
+          child: const Icon(Icons.play_arrow),
+        ),
+      ),
+    );
   }
+}
 
-  Future<bool> _checkAndRequestPermission({bool? background}) async {
-    if (!await FlLocation.isLocationServicesEnabled) {
-      // Location services are disabled.
-      return false;
-    }
+class LogView extends StatefulWidget {
+  const LogView({Key? key}) : super(key: key);
 
-    var locationPermission = await FlLocation.checkLocationPermission();
-    if (locationPermission == LocationPermission.deniedForever) {
-      // Cannot request runtime permission because location permission is denied forever.
-      return false;
-    } else if (locationPermission == LocationPermission.denied) {
-      // Ask the user for location permission.
-      locationPermission = await FlLocation.requestLocationPermission();
-      if (locationPermission == LocationPermission.denied ||
-          locationPermission == LocationPermission.deniedForever) return false;
-    }
+  @override
+  State<LogView> createState() => _LogViewState();
+}
 
-    // Location permission must always be allowed (LocationPermission.always)
-    // to collect location data in the background.
-    if (background == true &&
-        locationPermission == LocationPermission.whileInUse) return false;
-
-    // Location services has been enabled and permission have been granted.
-    return true;
-  }
-
-  Future<void> _onData(dynamic data) async {
-    if (data is int) {
-      print('eventCount ->: $data');
-    }
-    // else if (data is Location) {
-    //   print('location ->: ${data.toString()}');
-    //   final date = DateTime.now().toString();
-    //   await _writeData('${data.toString()}, $date\n');
-    // }
-    else if (data is String) {
-      if (data == 'onNotificationPressed') {
-        Navigator.of(context).pushNamed('/resume-route');
-      } else {
-        print('location ->: ${data}');
-        final date = DateTime.now().toString();
-        await _writeData('$data, $date\n');
-      }
-    } else if (data is DateTime) {
-      print('timestamp: ${data.toString()}');
-    }
-
-    // Location location = Location.fromJson(data);
-
-    // print('location ->: ${location}');
-    // final date = DateTime.now().toString();
-    // await _writeData('${location.toString()}, $date\n');
-  }
+class _LogViewState extends State<LogView> {
+  late final Timer timer;
+  List<String> logs = [];
 
   @override
   void initState() {
     super.initState();
-    _requestPermissionForAndroid();
-    _checkAndRequestPermission();
+    timer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      final SharedPreferences sp = await SharedPreferences.getInstance();
+      await sp.reload();
+      logs = sp.getStringList('log') ?? [];
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    timer.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      // A widget that can start the foreground service when the app is minimized or closed.
-      // This widget must be declared above the [Scaffold] widget.
-      home: WillStartForegroundTask(
-        onWillStart: () async {
-          // Return whether to start the foreground service.
-          return true;
-        },
-        androidNotificationOptions: AndroidNotificationOptions(
-          channelId: 'foreground_service',
-          channelName: 'Foreground Service Notification',
-          channelDescription:
-              'This notification appears when the foreground service is running.',
-          channelImportance: NotificationChannelImportance.LOW,
-          priority: NotificationPriority.LOW,
-          isSticky: false, // important
-          iconData: const NotificationIconData(
-            resType: ResourceType.mipmap,
-            resPrefix: ResourcePrefix.ic,
-            name: 'launcher',
-          ),
-          buttons: [
-            const NotificationButton(id: 'sendButton', text: 'Send'),
-            const NotificationButton(id: 'testButton', text: 'Test'),
-          ],
-        ),
-        iosNotificationOptions: const IOSNotificationOptions(
-          showNotification: true,
-          playSound: false,
-        ),
-        foregroundTaskOptions: const ForegroundTaskOptions(
-          interval: 5000,
-          isOnceEvent: false,
-          allowWakeLock: false,
-          allowWifiLock: false,
-        ),
-        notificationTitle: 'Foreground Service is running',
-        notificationText: 'Tap to return to the app',
-        callback: startCallback,
-        onData: _onData,
-        child: Scaffold(
-          appBar: AppBar(
-            title: const Text('Flutter Foreground Task'),
-            centerTitle: true,
-          ),
-          body: _buildContentView(),
-        ),
-      ),
+    return ListView.builder(
+      itemCount: logs.length,
+      itemBuilder: (context, index) {
+        final log = logs.elementAt(index);
+        return Text(log);
+      },
     );
   }
-
-  Widget _buildContentView() {
-    buttonBuilder(String text, {VoidCallback? onPressed}) {
-      return ElevatedButton(
-        onPressed: onPressed,
-        child: Text(text),
-      );
-    }
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          buttonBuilder('Read Data', onPressed: () async {
-            data = await _readData();
-            setState(() {});
-          }),
-          SizedBox(
-            height: 500,
-            child: SingleChildScrollView(
-              child: Text(data),
-            ),
-          )
-        ],
-      ),
-    );
-  }
-
-  Future<String> _readData() async {
-    final Directory directory = await getApplicationDocumentsDirectory();
-    final File file = File('${directory.path}/my_file_location.txt');
-
-    if (await file.exists()) {
-      return await file.readAsString();
-    }
-
-    return 'File not exists';
-  }
-}
-
-Future<void> _writeData(String text) async {
-  final Directory directory = await getApplicationDocumentsDirectory();
-  final File file = File('${directory.path}/my_file_location.txt');
-
-  String data = '...';
-  if (await file.exists()) {
-    data = await file.readAsString();
-  }
-
-  await file.writeAsString(data + text);
 }
