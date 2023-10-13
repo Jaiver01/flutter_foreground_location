@@ -11,10 +11,10 @@ import flutter_background_service_ios // flutter_background_service
     GeneratedPluginRegistrant.register(with: self)
 
     // flutter_foreground_task
-    SwiftFlutterForegroundTaskPlugin.setPluginRegistrantCallback(registerPlugins)
-    if #available(iOS 10.0, *) {
-      UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
-    }
+    // SwiftFlutterForegroundTaskPlugin.setPluginRegistrantCallback(registerPlugins)
+    // if #available(iOS 10.0, *) {
+    //   UNUserNotificationCenter.current().delegate = self as? UNUserNotificationCenterDelegate
+    // }
     // flutter_foreground_task
 
     // flutter_background_service
@@ -27,6 +27,6 @@ import flutter_background_service_ios // flutter_background_service
   }
 }
 
-func registerPlugins(registry: FlutterPluginRegistry) {
-  GeneratedPluginRegistrant.register(with: registry)
-}
+// func registerPlugins(registry: FlutterPluginRegistry) {
+//   GeneratedPluginRegistrant.register(with: registry)
+// }
